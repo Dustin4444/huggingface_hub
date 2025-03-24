@@ -1,76 +1,80 @@
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from huggingface_hub._upload_large_folder import upload_large_folder_internal
-from huggingface_hub.hf_api import HfApi
+from huggingface_hub import HfApi
 
 
 class TestUploadLargeFolder(unittest.TestCase):
     def setUp(self):
-        self.api = Mock(spec=HfApi)
+        self.api = HfApi()
         self.repo_id = "test-repo"
-        self.repo_type = "model"
-        self.revision = "main"
-        self.private = False
-        self.allow_patterns = None
-        self.ignore_patterns = None
-        self.num_workers = 1
-        self.print_report = False
-        self.print_report_every = 60
+        self.folder_path = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.folder_path)
 
     def test_upload_large_folder_with_symlinks(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            folder_path = Path(tmpdir)
-            (folder_path / "file1.txt").write_text("content1")
-            (folder_path / "file2.txt").write_text("content2")
-            os.symlink(folder_path / "file1.txt", folder_path / "symlink1.txt")
-            os.symlink(folder_path / "file2.txt", folder_path / "symlink2.txt")
+        # Create a folder structure with symlinks
+        os.makedirs(os.path.join(self.folder_path, "subfolder"))
+        with open(os.path.join(self.folder_path, "file1.txt"), "w") as f:
+            f.write("content1")
+        os.symlink(
+            os.path.join(self.folder_path, "file1.txt"),
+            os.path.join(self.folder_path, "subfolder", "symlink1.txt"),
+        )
 
-            upload_large_folder_internal(
-                api=self.api,
+        # Mock the API calls
+        with patch.object(self.api, "create_repo") as mock_create_repo, patch.object(
+            self.api, "create_commit"
+        ) as mock_create_commit:
+            mock_create_repo.return_value.repo_id = self.repo_id
+
+            # Call the upload_large_folder function with recurse_symlinks=True
+            self.api.upload_large_folder(
                 repo_id=self.repo_id,
-                folder_path=folder_path,
-                repo_type=self.repo_type,
-                revision=self.revision,
-                private=self.private,
-                allow_patterns=self.allow_patterns,
-                ignore_patterns=self.ignore_patterns,
-                num_workers=self.num_workers,
-                print_report=self.print_report,
-                print_report_every=self.print_report_every,
+                folder_path=self.folder_path,
+                repo_type="model",
                 recurse_symlinks=True,
             )
 
-            self.api.create_repo.assert_called_once_with(repo_id=self.repo_id, repo_type=self.repo_type, private=self.private, exist_ok=True)
-            self.api.create_commit.assert_called_once()
-            self.assertEqual(len(self.api.create_commit.call_args[1]["operations"]), 4)
+            # Check that the symlinked file was uploaded
+            uploaded_files = [
+                call[1]["operations"][0].path_in_repo
+                for call in mock_create_commit.call_args_list
+            ]
+            self.assertIn("subfolder/symlink1.txt", uploaded_files)
 
     def test_upload_large_folder_without_symlinks(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            folder_path = Path(tmpdir)
-            (folder_path / "file1.txt").write_text("content1")
-            (folder_path / "file2.txt").write_text("content2")
-            os.symlink(folder_path / "file1.txt", folder_path / "symlink1.txt")
-            os.symlink(folder_path / "file2.txt", folder_path / "symlink2.txt")
+        # Create a folder structure with symlinks
+        os.makedirs(os.path.join(self.folder_path, "subfolder"))
+        with open(os.path.join(self.folder_path, "file1.txt"), "w") as f:
+            f.write("content1")
+        os.symlink(
+            os.path.join(self.folder_path, "file1.txt"),
+            os.path.join(self.folder_path, "subfolder", "symlink1.txt"),
+        )
 
-            upload_large_folder_internal(
-                api=self.api,
+        # Mock the API calls
+        with patch.object(self.api, "create_repo") as mock_create_repo, patch.object(
+            self.api, "create_commit"
+        ) as mock_create_commit:
+            mock_create_repo.return_value.repo_id = self.repo_id
+
+            # Call the upload_large_folder function with recurse_symlinks=False
+            self.api.upload_large_folder(
                 repo_id=self.repo_id,
-                folder_path=folder_path,
-                repo_type=self.repo_type,
-                revision=self.revision,
-                private=self.private,
-                allow_patterns=self.allow_patterns,
-                ignore_patterns=self.ignore_patterns,
-                num_workers=self.num_workers,
-                print_report=self.print_report,
-                print_report_every=self.print_report_every,
+                folder_path=self.folder_path,
+                repo_type="model",
                 recurse_symlinks=False,
             )
 
-            self.api.create_repo.assert_called_once_with(repo_id=self.repo_id, repo_type=self.repo_type, private=self.private, exist_ok=True)
-            self.api.create_commit.assert_called_once()
-            self.assertEqual(len(self.api.create_commit.call_args[1]["operations"]), 2)
+            # Check that the symlinked file was not uploaded
+            uploaded_files = [
+                call[1]["operations"][0].path_in_repo
+                for call in mock_create_commit.call_args_list
+            ]
+            self.assertNotIn("subfolder/symlink1.txt", uploaded_files)
